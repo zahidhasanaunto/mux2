@@ -12,7 +12,7 @@
 
 ## M2.1 — Android project scaffold: Kotlin + Compose, with auth and transport config
 
-**Goal:** an Android project under `android/` with Kotlin + Jetpack Compose, a local HTTP + chat-transport API client, credential entry/storage, and a runnable shell that can connect to the agent under the v1 auth/transport model.
+**Goal:** an Android project under `android/` with Kotlin + Jetpack Compose, a local HTTP API client, credential entry/storage, and a runnable shell that can connect to the agent under the v1 auth/transport model. It does **not** include the chat transport client; that is added in M3.5.
 
 **Acceptance criteria:**
 
@@ -46,8 +46,6 @@
 
 **Goal:** a complete Android HTTP client covering the M1 operations the phone needs: list sessions, list windows/panes, create session, kill session, send keys, paste, capture pane, resize — with authenticated requests under the v1 auth model.
 
-**Goal:** a complete Android API client covering the M1 operations the phone needs: list sessions, list windows/panes, create session, kill session, send keys, paste, capture pane, resize — with authenticated requests under the v1 auth model.
-
 **Acceptance criteria:**
 
 - [ ] The client can list sessions and their windows/panes (authenticated).
@@ -70,6 +68,7 @@
 
 - [ ] Any UI.
 - [ ] Chat, LLM, AI.
+- [ ] Chat transport. This client is the authenticated M1 HTTP client; chat connectivity is added in M3.5, not here.
 
 **Depends on:** M2.1, M1.7, M1.8.
 
@@ -77,7 +76,7 @@
 
 ## M2.3 — snapshot-based screen viewing on Android
 
-**Goal:** the Android app can show the current screen text of a selected pane in a readable terminal-like display, refreshed on demand.
+**Goal:** the app can show the current screen text of a selected pane in a readable terminal-like display, refreshed on demand.
 
 **Acceptance criteria:**
 

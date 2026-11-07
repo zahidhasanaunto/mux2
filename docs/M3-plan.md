@@ -134,11 +134,11 @@
 
 ## M3.4 — permission gating for terminal effects
 
-**Goal:** terminal-affecting AI tools are gated by default, with the approval flow surfaced on the phone. `execute_command` is the canonical run-command tool, but `insert_text_at_cursor`/paste (and any AI-reachable resize or session create/kill) are also terminal writes and are gated unless explicitly allowed.
+**Goal:** terminal-affecting AI tools are gated by default, with the approval flow surfaced on the phone. The v1 terminal-effect surface is the single terminal-input category (`execute_command`, `insert_text_at_cursor`, paste); any AI-reachable resize or session create/kill operations are separate permissions.
 
 **Acceptance criteria:**
 
-- [ ] Each chat has a permission setting per terminal-effect tool category (at minimum: run command, AI terminal writes, and any other AI-reachable state-changing operations such as resize or session create/kill if they are exposed to the AI). The v1 setting set is chosen explicitly; it is not limited to `execute_command` alone.
+- [ ] Each chat has one terminal-input permission covering `execute_command`, `insert_text_at_cursor`, and paste. Any exposed session-management or resize permissions are separate.
 - [ ] Each setting is one of Allow, Ask, Deny for that category.
 - [ ] When the LLM requests a gated tool and the chat setting is Ask, the request is parked and the phone is asked to approve or deny before the tool runs.
 - [ ] When allowed, the tool runs and the result is fed back into the chat.
@@ -148,7 +148,7 @@
 
 **Test cases:**
 
-- [ ] Unit tests for the permission state machine per category: Allow runs immediately, Ask parks and waits, Deny blocks, and the transitions are correct.
+- [ ] Unit tests for the permission state machine: Allow runs immediately, Ask parks and waits, Deny blocks, and the transitions are correct.
 - [ ] Unit tests for the pending-request resolution: answering a specific pending request runs or blocks the right tool call.
 - [ ] **Bypass tests for the single-category rule:** verify that no combination of v1 permission settings allows AI terminal input to execute a command when terminal input is denied or asked.
   - Primary case: terminal-input Deny + anything else. Any AI tool call that would send keystrokes/text to the terminal is blocked without execution.
@@ -173,7 +173,6 @@
 **Acceptance criteria:**
 
 - [ ] The app can list chats and open one (using the M3.6 write API).
-
 - [ ] The app can create a chat with an optional target session/pane for the AI (using the M3.6 write API), so the AI's "current session" is explicit.
 - [ ] The app can show messages in a chat, including streaming AI responses as deltas arrive (using the M3.6 subscription transport).
 - [ ] The app can send a user message into a chat (using the M3.6 write API), which triggers the agent's LLM client + tool loop.
@@ -202,22 +201,6 @@
 
 ---
 
-**Test cases:**
-
-- [ ] **Duplicate-approval test:** approve the same pending request twice; the tool runs once and the second approval is a no-op or explicit duplicate error, not a second execution.
-- [ ] **Restart-during-execution test:** while a command is running or a request is pending, restart the agent; assert no undelried command is auto-replayed and the post-restart state is explicit.
-- [ ] **Expiry test:** a pending request that is not answered within the expiry window is resolved as expired/blocked.
-- [ ] **Cancellation test:** a pending request can be cancelled explicitly, and cancellation prevents execution.
-- [ ] **Target-change test:** if the target pane/session disappears while a request is pending, the request is resolved as no longer applicable, not executed against the wrong target.
-
-**Out of scope:**
-
-- [ ] A safety classifier. This task is about approval integrity, not content classification.
-
-**Depends on:** M3.4.
-
----
-
 ## M3.5b — approval integrity, run cancellation, iteration/time limits, and pending-approval cancellation
 
 **Goal:** define how pending approvals behave across restart/retry/pane changes, define the run-level cancellation and limits that keep the function-call loop from continuing after the user leaves or looping forever, and define the explicit cancellation endpoint the phone/UI uses to cancel an in-progress run.
@@ -229,7 +212,7 @@
 - [ ] Approval resolution is **atomic** for a given request identity: answering the same request more than once does not run the tool again. Duplicate approvals do not cause duplicate execution.
 - [ ] If the agent restarts while a request is pending, pending requests do not automatically replay. A restart does not execute commands that were waiting for approval before the restart. The post-restart state is explicit (pending requests are gone/expired/queued for re-approval as a new request, depending on the chosen rule), not a silent replay.
 - [ ] If the target pane/session changes or disappears while a request is pending, the request is resolved as no longer applicable (blocked/cancelled), not executed against the wrong target.
-- [ ] **Run cancellation endpoint:** there is an explicit request the phone/UI can make to cancel an in-progress AI run for a given chat/message. Cancelling a run stops further tool calls for that run. The chat reflects that the run was cancelled (for example a cancelled-run event or final answer indicating cancellation).
+- [ ] **Run cancellation endpoint and run-state invalidation of pending approvals:** there is an explicit request the phone/UI can make to cancel an in-progress AI run for a given chat/message. Cancelling a run stops further tool calls for that run, and it also invalidates the run's pending approvals: once the owning run is cancelled, interrupted, or has reached its iteration/time limit, any of its pending approval requests become unexecutable, even if they are later answered. Approval resolution for a pending request checks the owning run's state atomically — a run that is cancelled/interrupted/at-limit cannot execute the approved tool. The chat reflects that the run was cancelled and that any pending approvals were invalidated as a consequence.
 - [ ] **Already-submitted commands on cancellation:** if a command was already submitted to the terminal before cancellation took effect, cancellation does not magically erase it from the terminal. The contract states what cancellation does and does not do to already-submitted input: no new tool calls are made after cancellation is acknowledged; any command already sent is already in the terminal and is not unsent.
 - [ ] **Maximum tool iterations:** the function-call loop has an explicit maximum number of tool-call iterations per run, so a model that keeps requesting tools cannot loop indefinitely.
 - [ ] **Time limit:** the function-call loop has an explicit time limit per run, so a stalled or very long chain does not run forever.
@@ -242,7 +225,8 @@
 - [ ] **Expiry test:** a pending request not answered within the expiry window is resolved as expired/blocked.
 - [ ] **Cancellation test (pending request):** a pending request can be cancelled explicitly, and cancellation prevents execution.
 - [ ] **Target-change test:** if the target pane/session disappears while a request is pending, the request is resolved as no longer applicable, not executed against the wrong target.
-- [ ] **Run-cancellation endpoint test:** cancelling an in-progress run via the cancellation endpoint stops further tool calls and the chat reflects cancellation.
+- [ ] **Run-cancellation endpoint test:** cancelling an in-progress run via the cancellation endpoint stops further tool calls, invalidates the run's pending approvals, and the chat reflects cancellation.
+- [ ] **Late-approval-after-run-termination test:** while a run is awaiting approval for a pending request, cancel the run or let it hit its time/iteration limit; then submit a late approval for that now-terminated run's pending request and assert no terminal input occurs and the request is resolved as unexecutable (blocked/cancelled) because the owning run is cancelled/interrupted/at-limit.
 - [ ] **Already-submitted-on-cancellation test:** if a command was already submitted before cancellation, assert cancellation does not unsend it and the contract documents the resulting state.
 - [ ] **Iteration-limit test:** force the loop to exceed the maximum tool iterations; assert the run ends with an explicit limit-reached result.
 - [ ] **Time-limit test:** force the loop to exceed the time limit; assert the run ends with an explicit limit-reached result.
@@ -328,10 +312,10 @@ M3 is done when:
 - execute_command has explicit completion semantics (command-boundary tracked where supported, otherwise "input submitted" + snapshot or a bounded wait), with slow-command, delayed-output, busy-pane, and timeout tests;
 - pending approvals are immutable, have expiry/cancellation/atomic resolution, and do not auto-replay on restart or execute against a changed target;
 - there is an explicit run-cancellation endpoint the phone can call; cancelling a run stops further tool calls but does not unsend already-submitted commands; the loop has explicit maximum tool-iteration and time limits and ends with an explicit result when those limits are hit;
-- the phone chat UI can send messages, see streaming AI responses, see pending approval prompts for gated terminal-effect tools, answer/cancel them, and cancel an in-progress run; the run-cancellation, iteration-limit, and time-limit contracts are verified;
+- the phone chat UI can send messages, see streaming AI responses, see pending approval prompts for gated terminal-effect tools, answer/cancel them, and cancel an in-progress run; the run-cancellation, iteration-limit, time-limit, and late-approval-after-run-termination (pending approvals become unexecutable once the owning run is cancelled/interrupted/at-limit) contracts are verified;
 - the full loop is verified end to end against a real tmux session on LAN;
 - the chat transport contract (event IDs, replay cursor, reconnect deduplication, cancellation, write API including run cancellation, retry behavior, auth) is verified;
-- approval integrity (no duplicate execution, no auto-replay on restart, expiry/cancellation, target-change safety) is verified;
+- approval integrity (no duplicate execution, no auto-replay on restart, expiry/cancellation, target-change safety, pending-approval invalidation on run termination) is verified;
 - command completion semantics are verified (no false completion claims; slow-command/delayed-output/busy-pane/timeout behavior matches the documented contract);
 - durable vs. best-effort event guarantees are verified, including a durable interrupted/failed run event on recovery: if the agent crashes before completing an answer, recovery emits a durable interrupted/failed run event, clears the phone's streaming indicator, and does not automatically replay terminal actions; this is tested with a crash after several deltas but before final-answer persistence.
 
