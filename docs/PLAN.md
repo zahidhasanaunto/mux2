@@ -26,19 +26,30 @@ This plan is the source of truth for what gets built, in what order, and what "d
 ## Architecture, v1
 
 ```
-[Android app] --HTTPS/LAN--> [Cloudflare Worker / HTTP API] --LAN--> [Go host agent on machine]
-                                                                      |
-                                                                      v
-                                                                   [tmux server]
-                                                                      |
-                                                           sessions / windows / panes
+[Android app] --HTTPS/LAN--> [Go host agent on machine]
+[Desktop GUI]  --HTTPS/LAN--> [Go host agent on machine]
+                                              |
+                                              v
+                                           [tmux server]
+                                              |
+                               sessions / windows / panes (full tree; windows can be linked into multiple sessions)
 
 [Chat broker + persistence] lives in the Go host agent for v1 (in-memory + SQLite).
 [OpenRouter LLM client] lives in the Go host agent for v1.
 [AI tool surface] maps LLM tool calls to agent operations on tmux sessions/panes.
+[Chat transport to phone] is an explicit API surface in the agent for v1 (SSE or WebSocket; see M3.6).
 ```
 
-For v1, the Go host agent is the brain: it owns tmux, owns the chat broker and persistence, owns the OpenRouter LLM client, and exposes HTTP API surfaces that the Cloudflare Worker can front (or that the desktop/Android clients can hit directly on LAN while we're iterating). The Worker is the public-facing API layer; the agent is the integration layer.
+For v1, all remote clients reach the Go host agent directly over LAN (HTTPS on the agent's bound port). The agent is the brain: it owns tmux, owns the chat broker and persistence, owns the OpenRouter LLM client, and exposes the HTTP + chat-transport surfaces that the desktop and Android clients call. There is **no Cloudflare Worker in v1**.
+
+**Cloudflare Worker is deferred to M4.** In v1, the agent binds to loopback by default and only exposes LAN access after an explicit transport-security decision and an auth baseline (see M1.7 and M1.8). A Worker can become the public-facing front door later, but only after we define the network path (for example a Tunnel / private-network access) and the relay/consent model that makes "from anywhere" safe. Until then, a Worker cannot be the v1 LAN path.
+
+## Network and security decisions, v1
+
+- **Default bind:** loopback only (`127.0.0.1`), unless the operator explicitly enables LAN access.
+- **LAN enablement:** opt-in, with an explicit transport-security decision (TLS vs. plain HTTP on a trusted LAN, and what that means for the deployment). Record the decision when made; do not assume plain HTTP over LAN is acceptable for a machine that accepts input injection, session creation, and session deletion.
+- **Auth baseline:** before LAN access is enabled, require authenticated access to sensitive operations (session create/kill, input injection, resize, capture that may expose terminal contents, chat/LLM operations). The v1 auth mechanism is chosen explicitly; it can be a simple token/key sent on each request, or another mechanism, but it must exist before LAN is on.
+- **Loopback default rationale:** v1 exposes input injection, session creation, and session deletion. Leaving that open on LAN by default is not acceptable without auth and a transport decision.
 
 ## Milestone overview
 
@@ -70,9 +81,10 @@ State is tracked with checkboxes in the plan files. A task is done when its acce
 
 ## Verification discipline
 
-- Every task lists test cases. Where a task is logic-heavy (control-mode parsing, session tree, API handlers, chat broker, LLM client, tool dispatch, permission gating), there are unit tests.
+- Every task lists test cases. Where a task is logic-heavy (control-mode parsing, session tree, API handlers, chat broker, LLM client, tool dispatch, permission gating, chat transport), there are unit tests.
 - Where a task touches tmux, there is an integration test against a real tmux server when possible, plus a documented "how to manually verify" path for things that need a real terminal interaction.
 - The desktop GUI is the day-to-day verification harness for the backend before the Android app exists.
+- Failure-mode tests are explicit: busy panes, delayed output, timeouts, duplicate approvals, restart-during-execution, unauthorized requests, reconnects, and replay/dedup where relevant.
 - No task is marked done if its acceptance criteria are not met.
 
 ## Non-goals for v1
@@ -89,8 +101,9 @@ Those are future/optional. v1 is the loop: control tmux from a host, show a scre
 
 These are recorded so we don't silently make them later:
 
-1. **Cloudflare Worker first or Go agent first?** The plan assumes Go agent first for the tmux integration, Worker added as the public API layer after the agent works on LAN. If you want the Worker first, we need wrangler installed and we still need the agent for tmux ownership; the Worker can't replace it.
+1. **Cloudflare Worker placement.** Deferred to M4. v1 is LAN: Android/desktop → Go agent. A Worker can become the public-facing front door later, after we define the network path (Tunnel / private-network access) and the relay/consent model. It is not a v1 LAN path.
 2. **Snapshot screen vs. stream for M2.** v1 starts with snapshot-based screen from the agent. The stream encoder (change-driven) is a later enhancement once the loop is real.
-3. **One pane per "mux2 session" vs. full tmux tree exposure.** v1 exposes the full tmux window/pane tree, but the UX can still present one primary pane per mux2 session for simplicity while still being able to see and drive the tree.
+3. **One pane per "mux2 session" vs. full tmux tree exposure.** v1 exposes the full tmux window/pane tree, including the fact that a window can be linked into multiple sessions. The UX can still present one primary pane per mux2 session for simplicity while still being able to see and drive the tree.
 4. **Chat persistence backend.** SQLite in the Go agent for v1. If you want something else later, we can change it; the broker interface is what matters.
 5. **OpenRouter model choice for day one.** Any model is available; we pick one for v1 testing and can change it. The plan does not pick a specific model yet.
+6. **v1 auth mechanism.** Before LAN is enabled, the agent requires authenticated access. The exact mechanism (static token, per-client key, mTLS, etc.) and the transport-security decision (TLS vs. plain HTTP on a trusted LAN) are made explicitly in M1.7/M1.8, not left open.

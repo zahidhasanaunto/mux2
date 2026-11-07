@@ -59,6 +59,8 @@
 
 **Depends on:** M1.1.
 
+**Decision record:** the session↔window relationship is modeled as links, not strict ownership. A window can be linked into more than one session in tmux, so the tree model must allow a window to appear in multiple sessions. Internal consistency is: a pane belongs to exactly one window, a window is identified independently of sessions, and a session lists the windows linked into it.
+
 ---
 
 ## M1.3 — window/pane tree model and listing
@@ -78,6 +80,7 @@
 - [ ] Unit test for the in-memory tree model: create a synthetic tree, assert parent/child relationships and active-pane selection.
 - [ ] Integration test against a real tmux server: create a session, split panes, list windows, list panes, assert the tree matches the actual tmux layout.
 - [ ] Integration test: rename a window, assert the listing reflects the new name.
+- [ ] **Shared-window test:** link a window into two sessions (where tmux allows it), list both sessions, and assert the shared window appears in both sessions' window lists while still being the same window identity. This validates the link model directly.
 - [ ] Negative test: listing a nonexistent session returns a clear error.
 
 **Out of scope:**
@@ -176,24 +179,28 @@
 
 ---
 
-## M1.7 — HTTP API surface for the agent
+## M1.7 — HTTP API surface for the agent, bind and access model
 
-**Goal:** the agent exposes an HTTP API that covers the M1 operations, so the desktop GUI and later the Cloudflare Worker can call it.
+**Goal:** the agent exposes an HTTP API that covers the M1 operations, with an explicit bind/access model: loopback by default, LAN only after an explicit transport-security decision and an auth baseline.
 
 **Acceptance criteria:**
 
 - [ ] The API exposes endpoints for: list sessions, create session, kill session, list windows, list panes, send keys, paste text, capture pane (visible + scrollback), resize pane/window.
 - [ ] Each endpoint has a documented request/response shape.
 - [ ] The API returns clear error bodies for bad session/pane ids, dead panes, and validation errors.
-- [ ] The API is reachable on the agent's local port and works over LAN for the desktop GUI and Android client during v1.
-- [ ] There is basic API surface documentation in the backend README.
+- [ ] By default the agent binds to loopback only (`127.0.0.1`). LAN access is opt-in and disabled until the operator explicitly enables it.
+- [ ] Before LAN access is enabled, the API requires authenticated access. The v1 auth mechanism is chosen explicitly and documented (for example a static token/key sent on each request, or another mechanism). There is no "open on LAN by default" mode.
+- [ ] Before LAN access is enabled, there is an explicit transport-security decision recorded (TLS vs. plain HTTP on a trusted LAN), and the chosen mode is documented in the backend README. If plain HTTP is chosen, the conditions under which that is acceptable are stated explicitly.
+- [ ] There is basic API surface documentation in the backend README, including the bind model, auth requirement, and transport decision.
 
 **Test cases:**
 
 - [ ] Unit/integration tests for each endpoint against a real tmux-backed agent where possible.
 - [ ] Contract tests for request/response shapes: valid requests produce the documented response shape; invalid requests produce the documented error shape.
 - [ ] Negative tests: nonexistent session/pane ids, bad payloads, oversized payloads where relevant.
-- [ ] A scripted smoke test that creates a session, sends keys, captures output, resizes, and tears down, entirely via HTTP.
+- [ ] **Unauthorized-request tests:** requests to sensitive endpoints without valid auth are rejected with a clear error. This applies to the operations that can change the machine's terminal state or expose its contents (session create/kill, send keys, paste, resize, capture, and any chat/LLM endpoints when they exist). Read-only harmless endpoints may have a different rule, but that rule is chosen explicitly, not by accident.
+- [ ] **Loopback-default tests:** by default the agent does not accept LAN connections; only loopback is reachable. When LAN is enabled, the auth and transport decisions above are enforced.
+- [ ] A scripted smoke test that creates a session, sends keys, captures output, resizes, and tears down, entirely via HTTP, using valid auth.
 
 **Out of scope:**
 
@@ -205,13 +212,14 @@
 
 ---
 
-## M1.8 — basic GUI verification client
+## M1.8 — basic GUI verification client, with the same access model
 
-**Goal:** a basic GUI app that can list sessions, create a session, send keys/paste, capture and display the screen, and resize — enough to verify the backend without the Android app.
+**Goal:** a basic GUI app that can list sessions, create a session, send keys/paste, capture and display the screen, and resize — enough to verify the backend without the Android app — using the same bind/auth/transport model as the API.
 
 **Acceptance criteria:**
 
-- [ ] The GUI can connect to the agent HTTP API (local or LAN).
+- [ ] The GUI can connect to the agent HTTP API on loopback by default, and over LAN only when LAN is enabled and auth/transport are configured.
+- [ ] The GUI handles the v1 auth mechanism (for example a token/config entry) rather than assuming open access.
 - [ ] The GUI can list sessions and their windows/panes.
 - [ ] The GUI can create a session and show it in the list.
 - [ ] The GUI can send keys and paste text into a selected pane.
