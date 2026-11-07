@@ -9,17 +9,17 @@ This plan is the source of truth for what gets built, in what order, and what "d
 ## Chosen stack
 
 - **Backend language:** Go.
-- **API hosting model:** Cloudflare Worker as the HTTP API front door; a Go host agent on the machine owns and drives tmux. The Worker is the API surface; the agent is the tmux integration point.
-- **tmux integration:** host owns tmux sessions (create/kill/resize) and can attach to/drive existing user tmux sessions. Full window/pane tree model.
+- **API hosting model, v1:** Android/desktop clients reach the Go host agent directly over LAN. The Cloudflare Worker is deferred to M4 (likely as the public-facing front door and/or relay-facing layer once the network path and relay/consent model are defined). A Worker cannot own tmux, so it is not the v1 tmux integration point.
+- **tmux integration:** host owns tmux sessions (create/kill/resize) and can attach to/drive existing user tmux sessions. Full window/pane tree model, including the fact that a window can be linked into multiple sessions; the tree model distinguishes window identity from session links/indexes.
 - **LLM:** OpenRouter for v1; any model via OpenRouter.
 - **Android client:** Kotlin + Jetpack Compose.
 - **Desktop verification client:** basic GUI app, developed alongside the backend.
-- **v1 constraints:** no relay, no images, no local model.
+- **v1 constraints:** no relay, no images, no local model. v1 has no Cloudflare Worker in the hot path; the Worker is deferred to M4.
 
 ## Why this stack, briefly
 
 - Go is the best fit for the API + tmux control mode host agent in this deployment model: good tmux control-mode parsing story, easy HTTP server, easy to keep growing into the AI layer, and a clean fit for a small agent process that owns tmux on the machine.
-- The Cloudflare Worker is the HTTP API front door because you chose that. A Worker cannot run tmux itself, so the architecture is Worker-first API + a Go host agent on the machine that owns tmux. We can build the Go agent first and add the Worker as the public API later, or set up wrangler when you're ready; either way the tmux ownership lives in the agent, not the Worker.
+- The Cloudflare Worker was your chosen API front door, but it is deferred to M4 because a Worker cannot run tmux itself and v1 is LAN-only. In v1, the Go host agent is both the API surface and the tmux integration point, reached directly by the Android/desktop clients on LAN. A Worker can become the public-facing front door later, but only after we define the network path (for example a Tunnel / private-network access) and the relay/consent model that makes "from anywhere" safe. Until then, a Worker is not the v1 LAN path.
 - OpenRouter gives you "any model" for v1 without committing to one vendor's SDK.
 - Kotlin/Compose is the right long-term Android stack because the eventual goal is full native terminal control with real gesture support, and Compose is the modern native UI path with the deepest Android gesture/touch/pen surface.
 
@@ -53,10 +53,10 @@ For v1, all remote clients reach the Go host agent directly over LAN (HTTPS on t
 
 ## Milestone overview
 
-- **M1 — tmux control host.** Go agent drives tmux via control mode; HTTP API exposes sessions/panes/keys/paste/resize/capture; basic GUI can exercise it end to end.
-- **M2 — screen + input for the phone.** Snapshot-based screen from the agent; paste + send-keys + resize over the API; basic Android screen + input client.
-- **M3 — chat + OpenRouter + AI tool surface.** Chat broker, LLM client with streaming + function-call loop, tool surface for v1, execute_command Ask gating on the phone.
-- **M4 — relay / "from anywhere".** Later.
+- **M1 — tmux control host.** Go agent drives tmux via control mode; HTTP API exposes sessions/panes/keys/paste/resize/capture; basic GUI can exercise it end to end; loopback-default bind with opt-in LAN, auth before LAN, and an explicit transport decision.
+- **M2 — screen + input for the phone.** Snapshot-based screen from the agent; paste + send-keys + resize over the API; basic Android screen + input client with credential entry/storage and the chosen transport config.
+- **M3 — chat + OpenRouter + AI tool surface.** Chat broker, LLM client with streaming + function-call loop, v1 AI tool surface with a single terminal-input permission category, explicit command-completion semantics, approval integrity, run cancellation + iteration/time limits, durable vs. best-effort event model, and a chat transport contract (subscriptions + writes) with auth.
+- **M4 — relay / "from anywhere", and likely the Cloudflare Worker front door if we want a public-facing API later.** Later.
 - **M5 — richer iTerm2-style features.** Later, incremental.
 
 ## How to read the per-milestone plans

@@ -21,6 +21,11 @@
 - [ ] The broker supports subscriptions: a subscriber gets existing messages on subscribe and live deliveries for new messages.
 - [ ] Messages survive agent restarts (persisted), and the broker can replay history on subscribe.
 - [ ] The broker has a clean interface so the LLM client, the phone, and the desktop GUI can all publish and subscribe.
+- [ ] **Durable vs. best-effort events are distinguished.** For v1:
+  - **Durable:** chat messages (user messages, AI answers, tool results, approval-request and approval-resolution events) are persisted and can be replayed after restart. The replay cursor in M3.6 is defined against these durable event identities.
+  - **Best-effort / reconstruction:** streaming deltas for a live AI answer are not necessarily individually durable in v1. If the agent restarts mid-stream, the client's replay after reconnect is defined as: the durable final answer (or the durable approval/tool-result events) can be replayed, but individual streaming deltas that were not durably committed may be lost and are reconstructed as a fresh delivery of the durable result where applicable, not as a perfect byte-identical replay of every delta.
+  - **Ack-lost deduplication:** if a client received an event but its acknowledgment was lost (for example due to a disconnect), the server may re-emit the event on reconnect. The client must deduplicate by event ID so a re-emitted event does not appear twice. This is part of the M3.6 reconnect/deduplication contract.
+- [ ] After an agent restart, the replay cursor behavior is explicit: the client replays durable events from the last acknowledged durable event ID, and any best-effort deltas that were in flight are handled per the reconstruction rule above, not silently dropped or duplicated.
 
 **Test cases:**
 
@@ -76,11 +81,12 @@
 
 - [ ] The tool surface includes at minimum: `execute_command`, `insert_text_at_cursor`, `get_screen_contents`, plus a few session-state/read tools such as `get_terminal_size`, `get_current_directory`, and `get_last_command` where the underlying tmux/agent semantics allow it.
 - [ ] Each tool has a clear name, description, and parameter schema, and is registered with the LLM client.
-- [ ] The permission model is defined around **terminal effects**, not only around "run a command". In v1, the tools that can affect the terminal are gated unless explicitly allowed:
-  - `execute_command` — runs a command in the selected pane. Canonical "run command" tool.
-  - `insert_text_at_cursor` — types/pastes text into the selected pane as keystrokes. This is a terminal write and can include submission/control characters, so it is gated by default in v1 unless the chat explicitly allows AI terminal writes.
-  - paste/text input paths that can submit or carry control characters are treated as terminal writes under the same default-gated rule.
-  - `resize` and session create/kill are also terminal-state-changing operations and are gated where they are reachable through the AI tool surface.
+- [ ] The permission model is defined around **AI terminal input as one category**, not as independent "run command" vs. "AI terminal writes" categories that can be set differently and create a bypass.
+  - In v1, there is a single terminal-input permission category covering all AI-supplied input that can reach the terminal as keystrokes/text, including `execute_command`, `insert_text_at_cursor`, and paste paths that can submit or carry control characters.
+  - If a chat's terminal-input setting is Deny, the AI cannot send any terminal input through the tool surface. If it is Ask, any such tool call is parked for approval. If it is Allow, the AI may use the allowed input tools.
+  - This single-category rule exists specifically so a configuration like "run command Deny + terminal writes Allow" cannot allow `insert_text_at_cursor` to submit a command as a bypass. There is no valid v1 configuration in which one category is Deny and another is Allow in a way that lets AI terminal input execute commands.
+  - If finer granularity is wanted later, it must be added as explicit precedence rules with their own tests, not as independent categories that can conflict.
+  - Session create/kill and resize are separate state-changing operations and are gated where they are reachable through the AI tool surface, but they are not a substitute path for terminal input.
 - [ ] `execute_command` maps to sending a command into the selected pane and capturing its output via the M1 send+capture flow, with the completion semantics defined in M3.3a below.
 - [ ] `insert_text_at_cursor` maps to sending text into the selected pane as keystrokes through the M1 send-keys flow.
 - [ ] `get_screen_contents` maps to capturing the pane's visible screen (and scrollback where relevant) through the M1 capture flow.
@@ -142,14 +148,17 @@
 
 - [ ] Unit tests for the permission state machine per category: Allow runs immediately, Ask parks and waits, Deny blocks, and the transitions are correct.
 - [ ] Unit tests for the pending-request resolution: answering a specific pending request runs or blocks the right tool call.
-- [ ] **Bypass tests:** verify that AI terminal writes cannot bypass the run-command approval by smuggling submission/control characters through `insert_text_at_cursor` or paste when terminal writes are Ask/Deny. Attempted bypass payloads (for example text containing a command followed by a submission character) are either blocked or required to go through the gated run-command path, depending on the chosen policy, and the test asserts the chosen policy holds.
-- [ ] Integration tests against the real agent + tmux for the Allow path: an approved run-command tool runs and returns output under the M3.3a completion semantics.
+- [ ] **Bypass tests for the single-category rule:** verify that no combination of v1 permission settings allows AI terminal input to execute a command when terminal input is denied or asked.
+  - Primary case: terminal-input Deny + anything else. Any AI tool call that would send keystrokes/text to the terminal (`execute_command`, `insert_text_at_cursor`, paste with submission/control characters) is blocked or asked, not executed.
+  - Conflicting-configuration case: there is no valid v1 state in which one category is Deny and another is Allow in a way that lets AI terminal input run a command. The implementation must reject or ignore any such inconsistent configuration, and the test asserts that inconsistent configs cannot produce execution.
+  - Smuggling case: payloads that try to submit a command through `insert_text_at_cursor` or paste (for example a command string followed by a submission character) are treated as terminal input under the same single category and are blocked/asked when terminal input is Deny/Ask.
+  - Allow case: when terminal-input is Allow, an approved run-command tool runs and returns output under the M3.3a completion semantics.
 - [ ] Negative tests: answering a nonexistent or already-resolved request is handled cleanly.
 
 **Out of scope:**
 
 - [ ] A safety classifier or "Always Allow still blocked by safety" layer. That is a later enhancement if you want it; v1 Ask gating is the core safety behavior.
-- [ ] Per-tool permissions beyond the chosen v1 categories. Start with the v1 terminal-effect categories and expand later if needed.
+- [ ] Per-tool permissions beyond the chosen v1 terminal-input category and the separate state-changing operations (session create/kill, resize) that are gated where reachable.
 
 **Depends on:** M3.1, M3.3, M3.3a, M2 (the phone is where the approval UI lives).
 
@@ -157,50 +166,38 @@
 
 ## M3.5 — chat UI on the phone and the AI loop end to end
 
-**Goal:** the Android app has a chat UI that can list chats, view messages, send a message, see streaming AI responses, see tool-request/approval prompts for gated terminal-effect tools, and answer them — completing the loop end to end.
+**Goal:** the Android app has a chat UI that can list chats, create a chat with a target pane, view messages, send a message, see streaming AI responses, see tool-request/approval prompts for gated terminal-effect tools, answer/cancel them, and cancel an in-progress run — completing the loop end to end. This task depends on the chat transport contract in M3.6 (both the subscription side and the write side).
 
 **Acceptance criteria:**
 
-- [ ] The app can list chats and open one.
-- [ ] The app can show messages in a chat, including streaming AI responses as deltas arrive.
-- [ ] The app can send a user message into a chat, which triggers the agent's LLM client + tool loop.
-- [ ] The app can display a pending approval prompt for gated terminal-effect tools (run command, AI terminal writes, and any other AI-reachable state-changing operations exposed to the AI) and allow/deny it.
+- [ ] The app can list chats and open one (using the M3.6 write API).
+- [ ] The app can create a chat with an optional target session/pane for the AI (using the M3.6 write API), so the AI's "current session" is explicit.
+- [ ] The app can show messages in a chat, including streaming AI responses as deltas arrive (using the M3.6 subscription transport).
+- [ ] The app can send a user message into a chat (using the M3.6 write API), which triggers the agent's LLM client + tool loop.
+- [ ] The app can display a pending approval prompt for gated terminal-effect tools (the single terminal-input category, plus any other AI-reachable state-changing operations exposed to the AI) and allow/deny/cancel it (using the M3.6 approval-resolution API).
+- [ ] The app can cancel an in-progress AI run (using the run-cancellation contract from M3.5b), and the cancellation is reflected in the chat.
 - [ ] The app can see the AI's final answer and any tool results in the chat.
 - [ ] The end-to-end loop works against a real tmux session: user sends a message, AI can read the screen and, if allowed, run a command and read its output, and the user sees it on the phone.
 
 **Test cases:**
 
-- [ ] Manual end-to-end on device/emulator against the agent on LAN: create a chat, send a message that asks to read the screen, see the screen contents in the answer; send a message that asks to run a command, approve it, see the output.
+- [ ] Manual end-to-end on device/emulator against the agent on LAN: create a chat with a target pane, send a message that asks to read the screen, see the screen contents in the answer; send a message that asks to run a command, approve it, see the output.
 - [ ] Manual verification for the streaming path: deltas arrive and the UI updates as they arrive.
 - [ ] Manual verification for the Ask path: the approval prompt appears for a gated tool, allow runs it, deny blocks it.
 - [ ] Manual verification for the bypass-safety expectation: an AI request that tries to affect the terminal through a gated write tool without approval is blocked/asked, not silently executed.
-- [ ] Unit/UI tests for the chat UI pieces where practical (message list rendering, streaming update, approval prompt).
-- [ ] Negative verification: sending to a nonexistent chat, or approving a nonexistent request, is handled cleanly.
+- [ ] Manual verification for run cancellation: cancel an in-progress run and observe that no further tool calls execute and the chat reflects the cancellation.
+- [ ] Unit/UI tests for the chat UI pieces where practical (message list rendering, streaming update, approval prompt, run cancellation).
+- [ ] Negative verification: sending to a nonexistent chat, creating a chat with a bad target pane, or approving/resolving a nonexistent request, is handled cleanly.
 
 **Out of scope:**
 
 - [ ] A polished chat UX. v1 only needs the loop to be verifiable.
-- [ ] Multiple model selection UI, chat settings UI beyond the v1 terminal-effect permission categories, etc. Those can come later.
+- [ ] Multiple model selection UI, chat settings UI beyond the v1 terminal-input category and the separate state-changing operations that are gated where reachable.
+- [ ] Relay, images, local model, full iTerm2 feature parity.
 
-**Depends on:** M3.1–M3.4, M3.5b, M2.
+**Depends on:** M3.1–M3.4, M3.5b, M3.6, M2.---
 
----
 
-## M3.7 — M3 acceptance test suite and release criteria
-
----
-
-## M3.5b — approval integrity: immutable requests, expiry, cancellation, atomic resolution, restart safety
-
-**Goal:** define how pending approvals behave across restart, retry, and pane changes, so approvals cannot be duplicated or replayed unintentionally.
-
-**Acceptance criteria:**
-
-- [ ] Each pending approval request is bound to **immutable arguments and target identity** (the exact tool, its arguments, and the session/pane it targets). The approval is for that specific request, not a reusable capability.
-- [ ] Pending requests have explicit **expiry** and **cancellation** rules. A request that is not answered within the expiry window is resolved as expired (blocked), not left hanging.
-- [ ] Approval resolution is **atomic** for a given request identity: answering the same request more than once does not run the tool again. Duplicate approvals of the same request do not cause duplicate execution.
-- [ ] If the agent restarts while a request is pending, pending requests do not automatically replay. A restart does not execute commands that were waiting for approval before the restart. The post-restart state is explicit (pending requests are gone/expired/queued for re-approval as a new request, depending on the chosen rule), not a silent replay.
-- [ ] If the target pane/session changes or disappears while a request is pending, the request is resolved as no longer applicable (blocked/cancelled), not executed against the wrong target.
 
 **Test cases:**
 
@@ -218,18 +215,23 @@
 
 ---
 
-## M3.6 — chat transport contract for the phone
+## M3.6 — chat transport contract for the phone: subscriptions and writes
 
-**Goal:** define how the Android app receives chat events from the agent: the transport, endpoint shape, event identity, replay, reconnect deduplication, and cancellation.
+**Goal:** define both how the Android app receives chat events and how it writes to the chat: connection shape, event identity, replay, reconnect deduplication, cancellation, and the chat write API (create chat with a target pane, submit messages, resolve approvals), plus retry behavior.
 
 **Acceptance criteria:**
 
 - [ ] The plan chooses the v1 chat transport: SSE or WebSocket (or another explicit choice), and records why.
 - [ ] The transport has an explicit endpoint/connection shape the Android client can use.
-- [ ] Events have explicit **event IDs** and a **replay cursor** so the client can ask for missed events after a reconnect and not re-receive the same event twice.
-- [ ] **Reconnect deduplication** is defined: after a reconnect, the client replays from the last acknowledged event ID, and the server does not re-emit events the client already acknowledged.
-- [ ] **Cancellation** is defined: the client can end the subscription, and the server stops sending events for that subscription.
-- [ ] The transport supports the broker's subscription model from M3.1 (subscribe to a chat, receive existing + new messages).
+- [ ] **Subscription side:** events have explicit **event IDs** and a **replay cursor**, so the client can reconnect and ask for missed events without re-receiving the same event twice. Reconnect deduplication is defined: after a reconnect, the client replays from the last acknowledged event ID, and the server does not re-emit events the client already acknowledged. Cancellation is defined: the client can end the subscription and the server stops sending events for it.
+- [ ] **Write side:** there are explicit request/response contracts for:
+  - creating a chat (optionally with a target session/pane the AI can be linked to),
+  - submitting a user message to a chat,
+  - resolving a pending approval (allow/deny/cancel) for a specific pending request identity,
+  - listing chats, listing messages in a chat, and reading the current pending requests for a chat.
+- [ ] The write API has explicit retry behavior: idempotent operations (where applicable, such as resolving a specific pending request identity) can be retried safely; non-idempotent submissions have a defined behavior on retry (for example, do not silently duplicate a user message; return the existing result or an explicit conflict).
+- [ ] The transport supports the broker's subscription model from M3.1 (subscribe to a chat, receive existing + new messages) and the write operations above.
+- [ ] Chat transport connections require the same auth as the rest of the agent API (M1.7/M1.8): no open chat transport.
 
 **Test cases:**
 
@@ -237,12 +239,15 @@
 - [ ] Reconnect tests: simulate a disconnect and reconnect, assert the client receives missed events and does not receive duplicates.
 - [ ] Cancellation tests: ending a subscription stops events for that subscription.
 - [ ] Negative tests: reconnecting with an invalid/expired cursor is handled explicitly.
+- [ ] Write-API contract tests: create chat, submit message, and resolve approval requests produce the documented response shapes and error shapes.
+- [ ] Retry tests: retrying an idempotent approval resolution is safe; retrying a message submission does not silently duplicate the message.
+- [ ] Auth tests for the chat transport: connections and write requests without valid credentials are rejected.
 
 **Out of scope:**
 
 - [ ] A relay transport. v1 chat transport is LAN, directly between the phone and the agent. Relay is M4.
 
-**Depends on:** M3.1.
+**Depends on:** M3.1, M1.7, M1.8.
 
 ---
 
@@ -252,16 +257,16 @@
 
 **Acceptance criteria:**
 
-- [ ] The chat broker, persistence, LLM client, tool dispatch, and permission gating all have unit tests that pass.
-- [ ] There is at least one integration/contract verification path for the OpenRouter loop (with a real API key where possible) and for the tool loop against real tmux.
-- [ ] The end-to-end phone loop is verified manually: chat → message → AI reads screen / runs approved command → user sees result.
-- [ ] The M3 release criteria are met: the phone can have a chat with an AI that can read the terminal and, with approval, run commands on the real tmux session.
+- [ ] The chat broker, persistence, chat transport (subscriptions + writes), LLM client, tool dispatch, terminal-input permission gating, command-completion semantics, approval integrity, run cancellation, iteration/time limits, and durable-event guarantees all have unit/contract tests that pass.
+- [ ] There is at least one integration/contract verification path for the OpenRouter loop (with a real API key where possible), for the tool loop against real tmux, and for the chat transport reconnect/replay/retry behavior.
+- [ ] The end-to-end phone loop is verified manually: create a chat with a target pane → send a message → AI reads the screen and, with approval, runs a command → user sees the result; plus run cancellation and bypass-safety behavior.
+- [ ] The M3 release criteria are met: the phone can have a chat with an AI that can read the terminal and, with approval, run commands on the real tmux session, with the full set of failure/integrity contracts above.
 
 **Test cases:**
 
-- [ ] Run the M3 unit test suite; it passes.
+- [ ] Run the M3 unit/contract test suite; it passes.
 - [ ] Run the M1 and M2 suites again to ensure M3 did not regress the substrate; they still pass.
-- [ ] Manual end-to-end on device/emulator against the agent on LAN; the full chat+AI loop works.
+- [ ] Manual end-to-end on device/emulator against the agent on LAN; the full chat+AI loop works, including cancellation and bypass-safety expectations.
 
 **Out of scope:**
 
@@ -281,10 +286,11 @@ M3 is done when:
 - terminal-affecting AI tools are gated by default (run command, AI terminal writes, and any other AI-reachable state-changing operations), with the approval flow surfaced on the phone and bypass attempts tested;
 - execute_command has explicit completion semantics (command-boundary tracked where supported, otherwise "input submitted" + snapshot or a bounded wait), with slow-command, delayed-output, busy-pane, and timeout tests;
 - pending approvals are immutable, have expiry/cancellation/atomic resolution, and do not auto-replay on restart or execute against a changed target;
-- the phone chat UI can send messages, see streaming AI responses, see pending approval prompts for gated terminal-effect tools, and answer them;
+- the phone chat UI can send messages, see streaming AI responses, see pending approval prompts for gated terminal-effect tools, answer/cancel them, and cancel an in-progress run; the run-cancellation, iteration-limit, and time-limit contracts are verified;
 - the full loop is verified end to end against a real tmux session on LAN;
-- the chat transport contract (event IDs, replay cursor, reconnect deduplication, cancellation) is verified;
+- the chat transport contract (event IDs, replay cursor, reconnect deduplication, cancellation, write API, retry behavior, auth) is verified;
 - approval integrity (no duplicate execution, no auto-replay on restart, expiry/cancellation, target-change safety) is verified;
-- command completion semantics are verified (no false completion claims; slow-command/delayed-output/busy-pane/timeout behavior matches the documented contract).
+- command completion semantics are verified (no false completion claims; slow-command/delayed-output/busy-pane/timeout behavior matches the documented contract);
+- durable vs. best-effort event guarantees are verified (chat messages and approval events survive restart and can be replayed; streaming deltas may be best-effort with a defined reconstruction/replay behavior; cursor behavior after restart and ack-lost deduplication are defined and tested).
 
-When M3 is done, you have the core of the iTerm2-style AI Chat loop on Linux + tmux + Android: the AI can read the terminal and, with your approval, run commands on it from the phone, with explicit failure behavior for the hard cases (busy panes, slow commands, reconnect, duplicate approvals, restart, bypass attempts). That is the substantive product for v1.
+When M3 is done, you have the core of the iTerm2-style AI Chat loop on Linux + tmux + Android: the AI can read the terminal and, with your approval, run commands on it from the phone, with explicit failure behavior for the hard cases (busy panes, slow commands, reconnect, duplicate approvals, restart, bypass attempts, runaway loops, run cancellation, event durability). That is the substantive product for v1.

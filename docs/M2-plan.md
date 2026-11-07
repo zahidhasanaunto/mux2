@@ -10,50 +10,56 @@
 
 ---
 
-## M2.1 — Android project scaffold: Kotlin + Compose
+## M2.1 — Android project scaffold: Kotlin + Compose, with auth and transport config
 
-**Goal:** an Android project under `android/` with Kotlin + Jetpack Compose, a local HTTP API client, and a runnable shell that can connect to the agent.
+**Goal:** an Android project under `android/` with Kotlin + Jetpack Compose, a local HTTP + chat-transport API client, credential entry/storage, and a runnable shell that can connect to the agent under the v1 auth/transport model.
 
 **Acceptance criteria:**
 
 - [ ] `android/` contains a Kotlin/Compose Android project that builds and runs on the available SDK/NDK/Java toolchain.
-- [ ] The project has a clean API client layer for the M1 agent HTTP API, in pure Kotlin, separate from UI.
-- [ ] There is a documented way to run the app on a device/emulator and point it at the agent.
+- [ ] The project has a clean API client layer for the M1 agent HTTP API and the M3 chat transport, in pure Kotlin, separate from UI.
+- [ ] The app has credential entry and storage for connecting to the agent (for example an agent URL + credentials field, stored securely on the device), because M1 requires authentication for LAN access and the chat transport requires the same auth.
+- [ ] The app has the chosen transport configuration entry (for example the agent base URL and the transport choice if the app needs to know it), matching the M1.7/M1.8 and M3.6 contracts.
+- [ ] There is a documented way to run the app on a device/emulator, enter credentials, and point it at the agent.
 - [ ] `./gradlew test` (or the project's equivalent) runs and passes for the non-UI testable code.
 
 **Test cases:**
 
 - [ ] Build passes for the Android project.
-- [ ] Unit tests for the API client layer pass (request/response shapes, error mapping, URL/config handling).
-- [ ] A documented manual step exists to run the app and confirm it can reach the agent's HTTP API (even if only a connectivity check at this stage).
+- [ ] Unit tests for the API client layer pass (request/response shapes, error mapping, URL/config handling, auth header application).
+- [ ] Invalid-credential tests: requests with missing/invalid credentials are rejected by the client layer with a clear error and do not silently succeed; the app surfaces that error.
+- [ ] A documented manual step exists to run the app, enter credentials, and confirm it can reach the agent's HTTP API and chat transport (even if only a connectivity check at this stage).
 
 **Out of scope:**
 
 - [ ] Any screen rendering or input driving yet.
-- [ ] Chat, LLM, AI.
+- [ ] Chat UI beyond the connection/credential setup. Chat UI comes in M3.5.
+- [ ] LLM, AI.
 
-**Depends on:** M1.7 (the HTTP API that the client will call).
+**Depends on:** M1.7, M1.8, M3.6 (the app needs the auth and transport contracts before it can connect).
 
 ---
 
-## M2.2 — Android API client for M1 operations
+## M2.2 — Android API client for M1 operations, with auth
 
-**Goal:** a complete Android API client covering the M1 operations the phone needs: list sessions, list windows/panes, create session, kill session, send keys, paste, capture pane, resize.
+**Goal:** a complete Android API client covering the M1 operations the phone needs: list sessions, list windows/panes, create session, kill session, send keys, paste, capture pane, resize — with authenticated requests under the v1 auth model.
 
 **Acceptance criteria:**
 
-- [ ] The client can list sessions and their windows/panes.
-- [ ] The client can create a session and kill a session.
-- [ ] The client can send keys and paste text into a selected pane.
-- [ ] The client can capture a pane's visible screen and scrollback.
-- [ ] The client can resize a pane/window.
+- [ ] The client can list sessions and their windows/panes (authenticated).
+- [ ] The client can create a session and kill a session (authenticated).
+- [ ] The client can send keys and paste text into a selected pane (authenticated).
+- [ ] The client can capture a pane's visible screen and scrollback (authenticated).
+- [ ] The client can resize a pane/window (authenticated).
+- [ ] The client applies the v1 credential/transport configuration from M2.1 to every request.
 - [ ] The client maps API errors into clear app-level errors, not raw failures that crash the UI.
 - [ ] The client is testable in isolation from the UI (for example via an interface/abstraction over HTTP).
 
 **Test cases:**
 
 - [ ] Unit tests for the client against recorded/mocked API responses for each operation, asserting correct request shapes and response parsing.
-- [ ] Error-path tests: nonexistent session/pane, dead pane, bad payload, network error — all produce app-level errors the UI can show.
+- [ ] Auth tests: requests without credentials, or with invalid credentials, produce clear auth errors and are not sent as unauthenticated calls that might silently fail elsewhere.
+- [ ] Error-path tests: nonexistent session/pane, dead pane, bad payload, network error, auth failure — all produce app-level errors the UI can show.
 - [ ] Contract tests that the client's request shapes match the M1 API contract.
 
 **Out of scope:**
@@ -61,7 +67,7 @@
 - [ ] Any UI.
 - [ ] Chat, LLM, AI.
 
-**Depends on:** M2.1, M1.7.
+**Depends on:** M2.1, M1.7, M1.8.
 
 ---
 

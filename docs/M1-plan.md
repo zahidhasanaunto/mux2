@@ -73,7 +73,7 @@
 - [ ] The agent can list panes in a window, with each pane's id, index, size, active state, and the session/window they belong to.
 - [ ] The agent can expose a session tree: session → windows → panes, in a stable shape suitable for an API response.
 - [ ] The agent can identify the currently active pane in a session/window.
-- [ ] The tree model is internally consistent: pane belongs to exactly one window, window belongs to exactly one session.
+- [ ] The tree model is internally consistent: a pane belongs to exactly one window; a window has an identity independent of sessions; a session lists the windows linked into it, and the same window identity can appear in more than one session's linked-window list (shared window).
 
 **Test cases:**
 
