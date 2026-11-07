@@ -1,0 +1,7 @@
+# Desktop verification client local artifacts (whichever stack is chosen later).
+*.zip
+*.dmg
+*.exe
+dist/
+build/
+node_modules/
