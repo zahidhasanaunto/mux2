@@ -17,30 +17,34 @@
 **Acceptance criteria:**
 
 - [ ] `android/` contains a Kotlin/Compose Android project that builds and runs on the available SDK/NDK/Java toolchain.
-- [ ] The project has a clean API client layer for the M1 agent HTTP API and the M3 chat transport, in pure Kotlin, separate from UI.
-- [ ] The app has credential entry and storage for connecting to the agent (for example an agent URL + credentials field, stored securely on the device), because M1 requires authentication for LAN access and the chat transport requires the same auth.
-- [ ] The app has the chosen transport configuration entry (for example the agent base URL and the transport choice if the app needs to know it), matching the M1.7/M1.8 and M3.6 contracts.
+- [ ] The project has a clean HTTP API client layer for the M1 agent HTTP API, in pure Kotlin, separate from UI.
+- [ ] The app has credential entry and storage for connecting to the agent (for example an agent URL + credentials field, stored securely on the device), because M1 requires authentication for LAN access.
+- [ ] The app has the chosen transport configuration entry (for example the agent base URL), matching the M1.7/M1.8 contracts. M2 does not require the M3 chat transport config; that is added in M3.5.
 - [ ] There is a documented way to run the app on a device/emulator, enter credentials, and point it at the agent.
 - [ ] `./gradlew test` (or the project's equivalent) runs and passes for the non-UI testable code.
 
 **Test cases:**
 
 - [ ] Build passes for the Android project.
-- [ ] Unit tests for the API client layer pass (request/response shapes, error mapping, URL/config handling, auth header application).
+- [ ] Unit tests for the HTTP client layer pass (request/response shapes, error mapping, URL/config handling, auth header application).
 - [ ] Invalid-credential tests: requests with missing/invalid credentials are rejected by the client layer with a clear error and do not silently succeed; the app surfaces that error.
-- [ ] A documented manual step exists to run the app, enter credentials, and confirm it can reach the agent's HTTP API and chat transport (even if only a connectivity check at this stage).
+- [ ] A documented manual step exists to run the app, enter credentials, and confirm it can reach the agent's HTTP API (not the chat transport; chat transport is M3.5).
 
 **Out of scope:**
 
 - [ ] Any screen rendering or input driving yet.
-- [ ] Chat UI beyond the connection/credential setup. Chat UI comes in M3.5.
+- [ ] Chat UI and chat connectivity. Chat UI and the chat transport client/integration come in M3.5. M2 only needs the authenticated M1 HTTP client.
 - [ ] LLM, AI.
 
-**Depends on:** M1.7, M1.8, M3.6 (the app needs the auth and transport contracts before it can connect).
+**Depends on:** M1.7, M1.8.
+
+**Note:** M2 does not depend on M3.6, and M2 does not require a working chat connection. The app's HTTP client is usable for M1 operations as soon as credentials + transport config exist. Chat connectivity (subscription transport, write API, approval/cancel flows) is added in M3.5 and depends on M2, not the other way around.
 
 ---
 
-## M2.2 — Android API client for M1 operations, with auth
+## M2.2 — Android HTTP client for M1 operations, with auth
+
+**Goal:** a complete Android HTTP client covering the M1 operations the phone needs: list sessions, list windows/panes, create session, kill session, send keys, paste, capture pane, resize — with authenticated requests under the v1 auth model.
 
 **Goal:** a complete Android API client covering the M1 operations the phone needs: list sessions, list windows/panes, create session, kill session, send keys, paste, capture pane, resize — with authenticated requests under the v1 auth model.
 
