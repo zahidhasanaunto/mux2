@@ -61,6 +61,10 @@
 
 **Decision record:** the session↔window relationship is modeled as links, not strict ownership. A window can be linked into more than one session in tmux, so the tree model must allow a window to appear in multiple sessions. Internal consistency is: a pane belongs to exactly one window, a window is identified independently of sessions, and a session lists the windows linked into it.
 
+**Probe notes (tmux 3.6 on this host):** `tmux list-sessions -F '#{session_name}\t#{session_id}\t#{session_created}\t#{session_windows}\t#{session_height}x#{session_width}'` already exposes the fields the list endpoint can return. `session_created` is epoch seconds. When a window is linked into two sessions via `link-window`, the same window identity appears in both sessions' window lists and each session has its own active pane. That shared-window case must be represented correctly in the tree model and verified in M1.3.
+
+**Implementation note:** the initial M1.2 package is a CLI-based ownership stub behind `internal/tmux`; the real implementation is a tmux control-mode client that holds a long-lived control socket and parses the control stream. The plan tests assert behavior, not this implementation, so the internals can change.
+
 ---
 
 ## M1.3 — window/pane tree model and listing
@@ -89,7 +93,7 @@
 - [ ] Capturing pane contents.
 - [ ] Resizing panes.
 
-**Depends on:** M1.2.
+**Probe notes (tmux 3.6 on this host):** `tmux list-windows -F '#{window_id} #{window_index} #{window_name} active-pane=#{pane_id}'` and `tmux list-panes -F '#{pane_id} #{pane_index} #{pane_width}x#{pane_height} active=#{pane_active}'` give the data the tree model needs. Window identity (`#{window_id}`) is independent of sessions; the same window can appear in more than one session after `link-window`.
 
 ---
 
@@ -167,8 +171,9 @@
 
 - [ ] Integration test against a real tmux server: resize a pane, capture, assert the grid dimensions changed as expected.
 - [ ] Integration test: resize and then send input, assert input still works in the resized pane.
-- [ ] Unit test for resize request validation (negative sizes, out-of-range values, etc.).
-- [ ] Negative test: resize a dead pane returns an error.
+- [ ] Unit test for resize request validation (negative sizes, out-of-range values, etc.).- [ ] Negative test: resize a dead pane returns an error.
+
+**Probe notes (tmux 3.6 on this host):** `tmux resize-pane -t <target> -x <width> -y <height>` works and `tmux list-panes -F '#{pane_width}x#{pane_height}'` reports the resulting geometry. Geometry is in tmux internal units; the capture model in M1.5 must be consistent with whatever units/resolution the pane capture uses, and the plan should record the chosen normalization explicitly.
 
 **Out of scope:**
 
@@ -179,7 +184,8 @@
 
 ---
 
-## M1.7 — HTTP API surface for the agent, bind and access model
+## M1.7
+ — HTTP API surface for the agent, bind and access model
 
 **Goal:** the agent exposes an HTTP API that covers the M1 operations, with an explicit bind/access model: loopback by default, LAN only after an explicit transport-security decision and an auth baseline.
 
